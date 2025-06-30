@@ -1,12 +1,12 @@
 from flask import Flask, request, jsonify
 import requests
 import os
-import logging
 from cachetools import TTLCache
+import logging
 
 app = Flask(__name__)
 
-# Configuration
+# Configuration depuis les variables d'environnement
 GUACAMOLE_BASE_URL = os.getenv("GUACAMOLE_BASE_URL", "http://machines.vmascourse.com/guacamole")
 GUACAMOLE_USERNAME = os.getenv("GUACAMOLE_USERNAME")
 GUACAMOLE_PASSWORD = os.getenv("GUACAMOLE_PASSWORD")
@@ -15,11 +15,11 @@ GUACAMOLE_API_URL = f"{GUACAMOLE_BASE_URL}/api/tokens"
 # Cache du token (5 minutes)
 token_cache = TTLCache(maxsize=1, ttl=300)
 
-# Logging
+# Configuration du logging
 logging.basicConfig(level=logging.INFO)
 
 def get_guacamole_token():
-    """Authentifie auprès de Guacamole et retourne un token, avec cache."""
+    """Récupère un token Guacamole avec mise en cache."""
     if "token" in token_cache:
         return token_cache["token"]
 
@@ -34,14 +34,14 @@ def get_guacamole_token():
         if token:
             token_cache["token"] = token
             return token
-        raise ValueError("Token not found in response.")
+        raise ValueError("Le token est absent dans la réponse.")
     except Exception as e:
         logging.error(f"Erreur d'authentification Guacamole : {e}")
         raise
 
 @app.route("/generate-url", methods=["POST"])
 def generate_url():
-    """Retourne une URL d'accès Guacamole à partir d'un ID de connexion."""
+    """Génère une URL Guacamole à partir d'un connection_id."""
     data = request.get_json()
     connection_id = data.get("connection_id")
 
@@ -50,7 +50,11 @@ def generate_url():
 
     try:
         token = get_guacamole_token()
-        url = f"{GUACAMOLE_BASE_URL}/#/client/{connection_id}?token={token}"
-        return jsonify({"guacamole_url": url})
+        access_url = f"{GUACAMOLE_BASE_URL}/#/client/{connection_id}?token={token}"
+        return jsonify({"guacamole_url": access_url})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
