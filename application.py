@@ -1,59 +1,47 @@
-from flask import Flask, request, jsonify
-import requests
 import os
+import requests
+from flask import Flask, request, jsonify
 from cachetools import TTLCache
-import logging
 
 app = Flask(__name__)
+GUAC_URL = os.getenv("GUACAMOLE_BASE_URL", "http://machines.vmascourse.com/guacamole")
+GUAC_AUTH = f"{GUAC_URL}/api/tokens"
+GUAC_CONNECTIONS = f"{GUAC_URL}/api/session/data/mysql/connections/"
 
-# Configuration depuis les variables d'environnement
-GUACAMOLE_BASE_URL = os.getenv("GUACAMOLE_BASE_URL", "http://machines.vmascourse.com/guacamole")
-GUACAMOLE_USERNAME = os.getenv("GUACAMOLE_USERNAME")
-GUACAMOLE_PASSWORD = os.getenv("GUACAMOLE_PASSWORD")
-GUACAMOLE_API_URL = f"{GUACAMOLE_BASE_URL}/api/tokens"
-
-# Cache du token (5 minutes)
+USERNAME = os.getenv("GUACAMOLE_USERNAME")
+PASSWORD = os.getenv("GUACAMOLE_PASSWORD")
 token_cache = TTLCache(maxsize=1, ttl=300)
 
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
-
-def get_guacamole_token():
-    """Récupère un token Guacamole avec mise en cache."""
+def get_token():
     if "token" in token_cache:
         return token_cache["token"]
-
-    try:
-        response = requests.post(
-            GUACAMOLE_API_URL,
-            data={"username": GUACAMOLE_USERNAME, "password": GUACAMOLE_PASSWORD},
-            timeout=5
-        )
-        response.raise_for_status()
-        token = response.json().get("authToken")
-        if token:
-            token_cache["token"] = token
-            return token
-        raise ValueError("Le token est absent dans la réponse.")
-    except Exception as e:
-        logging.error(f"Erreur d'authentification Guacamole : {e}")
-        raise
+    res = requests.post(GUAC_AUTH, data={"username": USERNAME, "password": PASSWORD})
+    res.raise_for_status()
+    token = res.json().get("authToken")
+    token_cache["token"] = token
+    return token
 
 @app.route("/generate-url", methods=["POST"])
 def generate_url():
-    """Génère une URL Guacamole à partir d'un connection_id."""
-    data = request.get_json()
-    connection_id = data.get("connection_id")
-
-    if not connection_id:
-        return jsonify({"error": "Le champ 'connection_id' est requis."}), 400
-
-    try:
-        token = get_guacamole_token()
-        access_url = f"{GUACAMOLE_BASE_URL}/#/client/{connection_id}?token={token}"
-        return jsonify({"guacamole_url": access_url})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    token = get_token()
+    headers = {"Guacamole-Token": token}
+    res = requests.get(GUAC_CONNECTIONS, headers=headers)
+    res.raise_for_status()
+    data = res.json()
+    
+    # Match by connection name or just get the first one
+    connection_name = request.json.get("connection_name", "")
+    conn_id = None
+    for key, val in data.items():
+        if val.get("name") == connection_name:
+            conn_id = key
+            break
+    
+    if not conn_id:
+        return jsonify({"error": "Connection name not found"}), 404
+    
+    url = f"{GUAC_URL}/#/client/{conn_id}?token={token}"
+    return jsonify({"guacamole_url": url})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run()
