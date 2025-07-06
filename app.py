@@ -1,57 +1,69 @@
 from flask import Flask, request, jsonify
 import requests
 import os
-from cachetools import TTLCache
-import logging
 
 app = Flask(__name__)
 
-# Configuration via variables d'environnement
-GUACAMOLE_BASE_URL = os.getenv("GUACAMOLE_BASE_URL", "http://machines.vmascourse.com/guacamole")
-GUACAMOLE_USERNAME = os.getenv("GUACAMOLE_USERNAME")
-GUACAMOLE_PASSWORD = os.getenv("GUACAMOLE_PASSWORD")
-GUACAMOLE_API_URL = f"{GUACAMOLE_BASE_URL}/api/tokens"
+# URLs des autres services (à personnaliser si besoin)
+CREATE_VM_URL = "https://webhook-ec2-api.onrender.com/create-vm"
+CREATE_USER_URL = "https://webservice-guacservice.onrender.com/create-user"
+CREATE_CONNECTION_URL = "https://webhook-api-new-vm.onrender.com/create-connection"
 
-# Cache pour le token (expire après 5 minutes)
-token_cache = TTLCache(maxsize=1, ttl=300)
-
-# Logging
-logging.basicConfig(level=logging.INFO)
-
-def get_guacamole_token():
-    """Récupère le token Guacamole avec cache."""
-    if "token" in token_cache:
-        return token_cache["token"]
-
+@app.route("/create-full-vm", methods=["POST"])
+def create_full_vm():
     try:
-        auth_res = requests.post(
-            GUACAMOLE_API_URL,
-            data={"username": GUACAMOLE_USERNAME, "password": GUACAMOLE_PASSWORD},
-            timeout=5
-        )
-        auth_res.raise_for_status()
-        token = auth_res.json().get("authToken")
-        if token:
-            token_cache["token"] = token
-            return token
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Guacamole auth failed: {e}")
-        raise
+        data = request.get_json()
+        ami = data.get("ami")
+        instance_type = data.get("instance_type")
+        username = data.get("username")
 
-@app.route("/generate-url", methods=["POST"])
-def generate_url():
-    data = request.json
-    connection_id = data.get("connection_id")
+        if not all([ami, instance_type, username]):
+            return jsonify({"error": "Missing ami, instance_type or username"}), 400
 
-    if not connection_id or not isinstance(connection_id, str):
-        return jsonify({"error": "connection_id must be a valid string"}), 400
+        # Étape 1 - Créer la VM
+        vm_payload = {
+            "ami": ami,
+            "instance_type": instance_type,
+            "username": username
+        }
+        vm_response = requests.post(CREATE_VM_URL, json=vm_payload)
+        vm_data = vm_response.json()
 
-    try:
-        token = get_guacamole_token()
-        access_url = f"{GUACAMOLE_BASE_URL}/#/client/{connection_id}?token={token}"
-        return jsonify({"guacamole_url": access_url})
+        if vm_response.status_code != 200:
+            return jsonify({"error": "EC2 creation failed", "details": vm_data}), 500
+
+        public_ip = vm_data["public_ip"]
+        private_key = vm_data["pem_key"]
+
+        # Étape 2 - Créer l'utilisateur Guacamole
+        user_payload = {"email": username}
+        user_response = requests.post(CREATE_USER_URL, json=user_payload)
+        user_data = user_response.json()
+
+        if user_response.status_code != 200 or not user_data.get("username"):
+            return jsonify({"error": "Guacamole user creation failed", "details": user_data}), 500
+
+        guac_username = user_data["username"]
+
+        # Étape 3 - Créer la connexion Guacamole
+        conn_payload = {
+            "ip": public_ip,
+            "private_key": private_key,
+            "connection_protocol": "ssh",
+            "connection_name": f"SSH - {public_ip}",
+            "username": guac_username
+        }
+        conn_response = requests.post(CREATE_CONNECTION_URL, json=conn_payload)
+        conn_data = conn_response.json()
+
+        if conn_response.status_code != 201:
+            return jsonify({"error": "Guacamole connection failed", "details": conn_data}), 500
+
+        return jsonify(conn_data)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(debug=True)
