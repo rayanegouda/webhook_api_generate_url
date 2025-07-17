@@ -1,69 +1,68 @@
 from flask import Flask, request, jsonify
 import requests
+import boto3
 import os
+from botocore.config import Config
 
 app = Flask(__name__)
 
-# URLs des autres services (à personnaliser si besoin)
-CREATE_VM_URL = "https://webhook-ec2-api.onrender.com/create-vm"
-CREATE_USER_URL = "https://webservice-guacservice.onrender.com/create-user"
-CREATE_CONNECTION_URL = "https://webhook-api-new-vm.onrender.com/create-connection"
+# Guacamole URL
+GUAC_URL = "https://machines.vmascourse.com/guacamole"
 
-@app.route("/create-full-vm", methods=["POST"])
-def create_full_vm():
+# DynamoDB Config
+aws_config = Config(
+    max_pool_connections=100,
+    retries={'max_attempts': 3}
+)
+
+
+aws_region_name = os.environ.get("AWS_REGION_NAME")
+dynamodb = boto3.resource('dynamodb', region_name=aws_region_name, config=aws_config)
+table_name = os.getenv("DYNAMODB_TABLE", "guacamole_users")
+table = dynamodb.Table(table_name)
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Guacamole Token API is up"}), 200
+
+@app.route("/api/final-login", methods=["POST"])
+def final_login():
     try:
         data = request.get_json()
-        ami = data.get("ami")
-        instance_type = data.get("instance_type")
         username = data.get("username")
+        connection_id = data.get("connection_id")
 
-        if not all([ami, instance_type, username]):
-            return jsonify({"error": "Missing ami, instance_type or username"}), 400
+        if not all([username, connection_id]):
+            return jsonify({"error": "Missing username or connection_id"}), 400
 
-        # Étape 1 - Créer la VM
-        vm_payload = {
-            "ami": ami,
-            "instance_type": instance_type,
-            "username": username
-        }
-        vm_response = requests.post(CREATE_VM_URL, json=vm_payload)
-        vm_data = vm_response.json()
+        # 🔍 Récupération du mot de passe dans DynamoDB
+        dynamo_response = table.get_item(Key={"username": username})
+        item = dynamo_response.get("Item")
+        if not item:
+            return jsonify({"error": "Username not found in DynamoDB"}), 404
 
-        if vm_response.status_code != 200:
-            return jsonify({"error": "EC2 creation failed", "details": vm_data}), 500
+        password = item.get("password")
+        if not password:
+            return jsonify({"error": "Password missing in DynamoDB"}), 500
 
-        public_ip = vm_data["public_ip"]
-        private_key = vm_data["pem_key"]
+        # 🔐 Authentification Guacamole
+        response = requests.post(
+            f"{GUAC_URL}/api/tokens",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data=f"username={username}&password={password}"
+        )
+        response.raise_for_status()
+        token = response.json().get("authToken")
 
-        # Étape 2 - Créer l'utilisateur Guacamole
-        user_payload = {"email": username}
-        user_response = requests.post(CREATE_USER_URL, json=user_payload)
-        user_data = user_response.json()
+        if not token:
+            return jsonify({"error": "No token returned by Guacamole"}), 502
 
-        if user_response.status_code != 200 or not user_data.get("username"):
-            return jsonify({"error": "Guacamole user creation failed", "details": user_data}), 500
-
-        guac_username = user_data["username"]
-
-        # Étape 3 - Créer la connexion Guacamole
-        conn_payload = {
-            "ip": public_ip,
-            "private_key": private_key,
-            "connection_protocol": "ssh",
-            "connection_name": f"SSH - {public_ip}",
-            "username": guac_username
-        }
-        conn_response = requests.post(CREATE_CONNECTION_URL, json=conn_payload)
-        conn_data = conn_response.json()
-
-        if conn_response.status_code != 201:
-            return jsonify({"error": "Guacamole connection failed", "details": conn_data}), 500
-
-        return jsonify(conn_data)
+        return jsonify({
+            "url": f"{GUAC_URL}/#/client/c/{connection_id}?token={token}"
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True)
