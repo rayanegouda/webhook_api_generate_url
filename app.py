@@ -51,6 +51,7 @@ def home():
 @app.route("/api/final-login", methods=["POST"])
 def final_login():
     try:
+        # 🔹 Récupération des données du corps de la requête
         data = request.get_json()
         username = data.get("username")
         connection_id = data.get("connection_id")
@@ -63,7 +64,7 @@ def final_login():
         if not password:
             return jsonify({"error": "User not found in DynamoDB"}), 404
 
-        # 🔐 Authentification Guacamole
+        # 🔐 Authentification auprès de Guacamole
         response = requests.post(
             f"{GUAC_URL}/api/tokens",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -75,14 +76,14 @@ def final_login():
         if not token:
             return jsonify({"error": "No token returned by Guacamole"}), 502
 
+        # ✅ Génération de l'URL de connexion Guacamole
         return jsonify({
-            "url": f"{GUAC_URL}/#/client/c/{connection_id}?token={token}"
+            "redirect_url": f"{GUAC_URL}/#/client/c/{connection_id}?token={token}"
         })
 
     except Exception as e:
         logging.error(f"❌ Exception dans /api/final-login : {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(debug=True)
