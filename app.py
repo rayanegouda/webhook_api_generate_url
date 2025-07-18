@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # Guacamole URL
-GUAC_URL = "https://machines.vmascourse.com/guacamole"
+GUAC_URL = "http://machines.vmascourse.com/guacamole"
 
 # AWS config
 aws_config = Config(
